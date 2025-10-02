@@ -1,0 +1,6 @@
+mysql-connector-python
+matplotlib
+tk
+pandas
+openpyxl
+xlrd
