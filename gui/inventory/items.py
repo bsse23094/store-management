@@ -39,10 +39,22 @@ class ItemsManager:
         self.company_combo = ttk.Combobox(filter_frame, textvariable=self.company_var, state="readonly", width=20)
         self.company_combo.pack(side=tk.LEFT, padx=5)
 
+        # Tax Method Filter
+        tk.Label(filter_frame, text="Tax Method:", font=("Arial", 10), bg="white").pack(side=tk.LEFT, padx=(20,5))
+        self.tax_method_var = tk.StringVar(value="All")
+        self.tax_method_combo = ttk.Combobox(filter_frame, textvariable=self.tax_method_var, state="readonly", width=25)
+        self.tax_method_combo['values'] = [
+            "All",
+            "Applicable on Trade Price",
+            "Included in Retail Price"
+        ]
+        self.tax_method_combo.pack(side=tk.LEFT, padx=5)
+
         # Bind events
         self.category_combo.bind("<<ComboboxSelected>>", lambda e: self.load_items())
         self.supplier_combo.bind("<<ComboboxSelected>>", lambda e: self.load_items())
         self.company_combo.bind("<<ComboboxSelected>>", lambda e: self.load_items())
+        self.tax_method_combo.bind("<<ComboboxSelected>>", lambda e: self.load_items())
 
         # Action Buttons
         btn_frame = tk.Frame(self.parent, bg="white")
@@ -61,7 +73,7 @@ class ItemsManager:
         tree_frame = tk.Frame(self.parent, bg="white", relief=tk.RAISED, borderwidth=1)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.columns = ("ID", "Barcode", "Company", "Name", "Variant", "Size", "Unit", "Category", "Supplier", "Cost", "Sale", "Stock", "Location", "PropertyParams")
+        self.columns = ("ID", "Barcode", "Company", "Name", "Variant", "Size", "Unit", "Category", "Supplier", "Cost", "Sale", "Stock", "Tax Method", "Location", "PropertyParams")
         self.tree = ttk.Treeview(tree_frame, columns=self.columns, show="headings", height=20)
         
         col_widths = {
@@ -77,6 +89,7 @@ class ItemsManager:
             "Cost": 80,
             "Sale": 80,
             "Stock": 80,
+            "Tax Method": 120,
             "Location": 100,
             "PropertyParams": 100
         }
@@ -129,7 +142,7 @@ class ItemsManager:
         self.entry = None
         self.category_edit_combo = None
         self.supplier_edit_combo = None
-        self.edit_columns_order = ["#2", "#3", "#4", "#5", "#6", "#7", "#8", "#9", "#10", "#11", "#12", "#13"]
+        self.edit_columns_order = ["#2", "#3", "#4", "#5", "#6", "#7", "#8", "#9", "#10", "#11", "#12", "#13", "#14"]
 
     def load_filters(self):
         try:
@@ -163,7 +176,8 @@ class ItemsManager:
                     p.cost_price, 
                     p.selling_price, 
                     p.stock,
-                    c.location_tag
+                    c.location_tag,
+                    p.tax_type
                 FROM products p
                 LEFT JOIN uoms u ON p.base_uom_id = u.id
                 LEFT JOIN categories c ON p.category_id = c.id
@@ -182,6 +196,11 @@ class ItemsManager:
             if self.company_var.get() != "All":
                 conditions.append("p.company = ?")
                 params.append(self.company_var.get())
+            if self.tax_method_var.get() != "All":
+                if self.tax_method_var.get() == "Applicable on Trade Price":
+                    conditions.append("p.tax_type = 'exclusive'")
+                elif self.tax_method_var.get() == "Included in Retail Price":
+                    conditions.append("p.tax_type = 'inclusive'")
 
             if conditions:
                 base_query += " AND " + " AND ".join(conditions)
@@ -210,10 +229,11 @@ class ItemsManager:
                     stock = "0.00"
                     
                 location = item[12] if item[12] is not None else ""
+                tax_method = "Applicable on Trade Price" if item[13] == "exclusive" else "Included in Retail Price" if item[13] == "inclusive" else "Applicable on Trade Price"
                 self.tree.insert("", "end", iid=item[0], values=(
                     item[0], item[1], item[2], item[3], 
                     item[4] or "", item[5] or "", item[6] or "Piece",
-                    item[7], item[8], cost, sale, stock, location, "PropertyParams"
+                    item[7], item[8], cost, sale, stock, tax_method, location, "PropertyParams"
                 ))
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load items: {str(e)}")
@@ -227,7 +247,7 @@ class ItemsManager:
             
             self.tree.insert("", "end", iid=new_id, values=(
                 new_id, "", "", "", "", "", "Piece", "", "", 
-                "Rs. 0.00", "Rs. 0.00", "0.00", "", "PropertyParams"
+                "Rs. 0.00", "Rs. 0.00", "0.00", "Applicable on Trade Price", "", "PropertyParams"
             ))
             self.tree.selection_set(new_id)
             self.tree.focus(new_id)
@@ -247,14 +267,14 @@ class ItemsManager:
         region = self.tree.identify("region", event.x, event.y)
         if region == "cell":
             column = self.tree.identify_column(event.x)
-            if column not in ["#1", "#14"]:
+            if column not in ["#1", "#15"]:
                 self.start_edit(column=column)
 
     def on_tree_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
         if region == "cell":
             column = self.tree.identify_column(event.x)
-            if column == "#14":
+            if column == "#15":
                 item_id = self.tree.identify_row(event.y)
                 if item_id:
                     from .item_properties import ItemPropertiesWindow
@@ -276,6 +296,10 @@ class ItemsManager:
         # Special handling for Supplier column (#9)
         elif column == "#9":
             self.start_supplier_edit(item_id)
+            return
+        # Special handling for Tax Method column (#13)
+        elif column == "#13":
+            self.start_tax_method_edit(item_id)
             return
 
         # Get current value
@@ -389,6 +413,48 @@ class ItemsManager:
         if self.supplier_edit_combo:
             self.supplier_edit_combo.destroy()
             self.supplier_edit_combo = None
+
+    def start_tax_method_edit(self, item_id):
+        """Show tax method dropdown for editing"""
+        x, y, width, height = self.tree.bbox(item_id, "#13")
+        if not x:
+            self.tree.see(item_id)
+            self.tree.update()
+            x, y, width, height = self.tree.bbox(item_id, "#13")
+
+        current_tax_method = self.tree.item(item_id, "values")[12]
+
+        self.tax_method_edit_combo = ttk.Combobox(self.tree, font=("Arial", 10), state="readonly")
+        tax_methods = [
+            "Applicable on Trade Price",
+            "Included in Retail Price"
+        ]
+        self.tax_method_edit_combo['values'] = tax_methods
+        self.tax_method_edit_combo.set(current_tax_method)
+        self.tax_method_edit_combo.place(x=x, y=y, width=width, height=height)
+        self.tax_method_edit_combo.focus()
+        self.tax_method_edit_combo.bind("<<ComboboxSelected>>", lambda e: self.save_tax_method_edit(item_id))
+        self.tax_method_edit_combo.bind("<FocusOut>", lambda e: self.cancel_tax_method_edit())
+        self.tax_method_edit_combo.bind("<Escape>", lambda e: self.cancel_tax_method_edit())
+
+    def save_tax_method_edit(self, item_id):
+        selected_method = self.tax_method_edit_combo.get()
+        tax_type = "exclusive" if selected_method == "Applicable on Trade Price" else "inclusive"
+        
+        try:
+            execute_query("UPDATE products SET tax_type = ? WHERE id = ?", (tax_type, int(item_id)))
+            values = list(self.tree.item(item_id, "values"))
+            values[12] = selected_method
+            self.tree.item(item_id, values=values)
+            self.cancel_tax_method_edit()
+            messagebox.showinfo("Success", "Tax method updated!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to update tax method: {str(e)}")
+
+    def cancel_tax_method_edit(self):
+        if hasattr(self, 'tax_method_edit_combo') and self.tax_method_edit_combo:
+            self.tax_method_edit_combo.destroy()
+            self.tax_method_edit_combo = None
 
     def handle_enter(self, event=None):
         if not self.entry or not self.editing_item:

@@ -1,86 +1,42 @@
-# database.py
-import sqlite3
-import os
 
-DB_FILE = "store.db"
+# Entity classes representing database tables
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+class User:
+    def __init__(self, id, username, password, role, full_name=None):
+        self.id = id
+        self.username = username
+        self.password = password
+        self.role = role
+        self.full_name = full_name
 
-    # Users
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin', 'cashier')),
-            full_name TEXT
-        )
-    """)
+class Product:
+    def __init__(self, id, name, price, stock=0, barcode=None):
+        self.id = id
+        self.name = name
+        self.price = price
+        self.stock = stock
+        self.barcode = barcode
 
-    # Products
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            price REAL NOT NULL,
-            stock REAL DEFAULT 0,
-            barcode TEXT UNIQUE
-        )
-    """)
+class Sale:
+    def __init__(self, id, invoice_no, customer_name, total, discount=0, payment_method=None,
+                 is_held=False, is_return=False, original_invoice=None, cashier_id=None, created_at=None):
+        self.id = id
+        self.invoice_no = invoice_no
+        self.customer_name = customer_name
+        self.total = total
+        self.discount = discount
+        self.payment_method = payment_method
+        self.is_held = is_held
+        self.is_return = is_return
+        self.original_invoice = original_invoice
+        self.cashier_id = cashier_id
+        self.created_at = created_at
 
-    # Sales
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_no TEXT UNIQUE,
-            customer_name TEXT,
-            total REAL,
-            discount REAL DEFAULT 0,
-            payment_method TEXT CHECK(payment_method IN ('cash', 'credit_card', 'return')),
-            is_held BOOLEAN DEFAULT 0,
-            is_return BOOLEAN DEFAULT 0,
-            original_invoice TEXT,
-            cashier_id INTEGER,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (cashier_id) REFERENCES users(id)
-        )
-    """)
-
-    # Sale Items
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sale_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sale_id INTEGER,
-            product_id INTEGER,
-            quantity REAL,
-            unit_price REAL,
-            total_price REAL,
-            FOREIGN KEY (sale_id) REFERENCES sales(id),
-            FOREIGN KEY (product_id) REFERENCES products(id)
-        )
-    """)
-
-    # Create default admin
-    c.execute("INSERT OR IGNORE INTO users (username, password, role, full_name) VALUES (?, ?, ?, ?)",
-              ("admin", "admin123", "admin", "System Admin"))
-
-    # Add sample products
-    sample_products = [
-        ("Coca Cola 500ml", 2.50, 100, "12345678"),
-        ("Lays Chips", 1.80, 80, "87654321"),
-        ("Nescafe Instant", 5.00, 50, "11223344"),
-        ("Bread Loaf", 3.20, 60, "55667788"),
-        ("Milk 1L", 1.99, 120, "99887766")
-    ]
-    for name, price, stock, barcode in sample_products:
-        c.execute("INSERT OR IGNORE INTO products (name, price, stock, barcode) VALUES (?, ?, ?, ?)",
-                  (name, price, stock, barcode))
-
-    conn.commit()
-    conn.close()
-    print("✅ Database initialized with sample products")
-
-def get_db_connection():
-    return sqlite3.connect(DB_FILE)
+class SaleItem:
+    def __init__(self, id, sale_id, product_id, quantity, unit_price, total_price):
+        self.id = id
+        self.sale_id = sale_id
+        self.product_id = product_id
+        self.quantity = quantity
+        self.unit_price = unit_price
+        self.total_price = total_price

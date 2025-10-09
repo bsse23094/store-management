@@ -51,23 +51,46 @@ class ReceiveGoodsWindow:
         self.po_combo.pack(side=tk.LEFT, padx=10)
         self.po_combo.bind("<<ComboboxSelected>>", self.load_po_items)
 
+        # GST Calculation Method Selection
+        gst_frame = tk.Frame(self.root, bg="#e8f4f8", relief=tk.RAISED, borderwidth=2)
+        gst_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Label(gst_frame, text="📊 GST Calculation Method:", font=("Arial", 11, "bold"), bg="#e8f4f8", fg="#0d47a1").pack(side=tk.LEFT, padx=(10, 5))
+        
+        self.gst_method_var = tk.StringVar(value="trade_price")
+        gst_methods = [
+            ("Applicable on Trade Price (GST% × Trade Price)", "trade_price"),
+            ("Included in Retail Price (Retail × GST% / (100 + GST%))", "retail_inclusive")
+        ]
+        
+        for text, value in gst_methods:
+            tk.Radiobutton(
+                gst_frame,
+                text=text,
+                variable=self.gst_method_var,
+                value=value,
+                bg="#e8f4f8",
+                font=("Arial", 10),
+                command=self.recalculate_all_items
+            ).pack(side=tk.LEFT, padx=10)
+
         # Items Table
         table_frame = tk.Frame(self.root, bg="white", relief=tk.RAISED, borderwidth=1)
         table_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
 
-        columns = ("Product", "PO Qty", "Received", "FOC", "Trade Price", "Retail Price", "GST%", "UOM", "Cost Price")
+        columns = ("Product", "PO Qty", "Received", "FOC", "Trade Price", "Discount%", "GST%", "Retail Price", "UOM", "Cost Price")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=15)
         
         col_widths = {
-            "Product": 180,
-            "PO Qty": 70,
-            "Received": 80,
-            "FOC": 60,
-            "Trade Price": 80,
-            "Retail Price": 80,
+            "Product": 170,
+            "PO Qty": 65,
+            "Received": 75,
+            "FOC": 55,
+            "Trade Price": 85,
+            "Discount%": 75,
             "GST%": 60,
-            "UOM": 70,
-            "Cost Price": 80
+            "Retail Price": 85,
+            "UOM": 65,
+            "Cost Price": 85
         }
         
         for col in columns:
@@ -92,7 +115,6 @@ class ReceiveGoodsWindow:
                       command=self.go_back).pack(side=tk.RIGHT, padx=5)
 
         self.receipt_items = []
-        self.qty_entries = {}
         self.po_items = []
 
     def toggle_direct_mode(self):
@@ -113,6 +135,14 @@ class ReceiveGoodsWindow:
             if hasattr(self, 'add_item_btn'):
                 self.add_item_btn.pack_forget()
             self.load_pos()
+
+    def recalculate_all_items(self):
+        """Recalculate all items when GST method changes"""
+        for row_id in self.tree.get_children():
+            item_idx = self.tree.index(row_id)
+            if item_idx < len(self.po_items):
+                item_data = self.po_items[item_idx]
+                self.recalculate_item(row_id, item_data)
 
     def load_empty_table(self):
         for item in self.tree.get_children():
@@ -139,7 +169,6 @@ class ReceiveGoodsWindow:
     def load_po_items(self, event=None):
         for item in self.tree.get_children():
             self.tree.delete(item)
-        self.qty_entries = {}
         
         selected_po = self.po_var.get()
         if not selected_po:
@@ -167,109 +196,84 @@ class ReceiveGoodsWindow:
                 'purchase_uom': item[4],
                 'product_id': item[5],
                 'gst_rate': item[6] or 17.0,
-                'tax_type': item[7] or 'exclusive'
+                'tax_type': item[7] or 'exclusive',
+                'discount_percent': 0.0,
+                'received_qty': 0.0,
+                'foc_qty': 0.0
             }
             self.po_items.append(item_data)
             self.add_item_to_tree(item_data)
 
     def add_item_to_tree(self, item_data):
-        if item_data['tax_type'] == 'inclusive':
-            retail_price = item_data['trade_price']
-        else:
-            retail_price = item_data['trade_price'] * (1 + item_data['gst_rate'] / 100)
+        # Calculate initial retail price
+        trade_price = item_data['trade_price']
+        discount_percent = item_data.get('discount_percent', 0.0)
+        gst_rate = item_data.get('gst_rate', 17.0)
+        
+        # Apply discount to trade price
+        discounted_trade = trade_price * (1 - discount_percent / 100)
+        
+        # Calculate retail price based on selected GST method
+        gst_method = self.gst_method_var.get()
+        
+        if gst_method == "trade_price":
+            # Method 1: GST applicable on trade price
+            retail_price = discounted_trade * (1 + gst_rate / 100)
+        else:  # retail_inclusive
+            # Method 2: GST included in retail
+            retail_price = discounted_trade
         
         row_id = self.tree.insert("", "end", values=(
             item_data['product_name'],
             f"{item_data['po_qty']:.2f}",
-            "0.00",
-            "0.00",
-            f"Rs. {item_data['trade_price']:.2f}",
+            f"{item_data.get('received_qty', 0.0):.2f}",
+            f"{item_data.get('foc_qty', 0.0):.2f}",
+            f"Rs. {trade_price:.2f}",
+            f"{discount_percent:.1f}%",
+            f"{gst_rate:.1f}%",
             f"Rs. {retail_price:.2f}",
-            f"{item_data['gst_rate']:.1f}%",
             item_data['purchase_uom'],
-            "Rs. 0.00"
+            f"Rs. {discounted_trade:.2f}"
         ))
-        self.create_received_qty_entry(row_id, item_data)
 
-    def create_received_qty_entry(self, row_id, item_data):
-        # Received Qty (now handles barcode)
-        x, y, width, height = self.tree.bbox(row_id, "#3")
-        if not x:
-            self.tree.see(row_id)
-            self.tree.update()
-            x, y, width, height = self.tree.bbox(row_id, "#3")
-        
-        qty_var = tk.StringVar(value="0.00")
-        qty_entry = tk.Entry(self.tree, textvariable=qty_var, width=8, font=("Arial", 9))
-        qty_entry.place(x=x, y=y, width=width, height=height)
-        
-        def on_qty_input(event=None):
-            value = qty_var.get().strip()
-            if not value:
-                return
-            try:
-                qty = float(value)
-                if qty < 0:
-                    qty = 0.0
-                qty_var.set(f"{qty:.2f}")
-                item_data['received_qty'] = qty
-                self.recalculate_item(row_id, item_data)
-            except ValueError:
-                # Treat as barcode
-                self.handle_barcode_input(value, row_id, item_data, qty_var)
-        
-        qty_entry.bind("<FocusOut>", on_qty_input)
-        qty_entry.bind("<Return>", on_qty_input)
-        qty_entry.bind("<Tab>", lambda e, r=row_id: self.focus_next(e, r, 'foc'))
-        qty_entry.bind("<Down>", lambda e, r=row_id: self.focus_next_row(e, r, 'qty'))
-        qty_entry.bind("<Up>", lambda e, r=row_id: self.focus_prev_row(e, r, 'qty'))
 
-        # FOC Qty
-        x_foc, y_foc, width_foc, height_foc = self.tree.bbox(row_id, "#4")
-        if not x_foc:
-            x_foc, y_foc, width_foc, height_foc = x, y, width, height
-        
-        foc_var = tk.DoubleVar(value=0.0)
-        foc_entry = tk.Entry(self.tree, textvariable=foc_var, width=6, font=("Arial", 9))
-        foc_entry.place(x=x_foc, y=y_foc, width=width_foc, height=height_foc)
-        foc_entry.bind("<FocusOut>", lambda e, r=row_id, v=foc_var, d=item_data: self.update_foc_qty(r, v, d))
-        foc_entry.bind("<Return>", lambda e, r=row_id, v=foc_var, d=item_data: self.update_foc_qty(r, v, d))
-        foc_entry.bind("<Tab>", lambda e: self.focus_next_col(e, row_id))
-        foc_entry.bind("<Down>", lambda e, r=row_id: self.focus_next_row(e, r, 'foc'))
-        foc_entry.bind("<Up>", lambda e, r=row_id: self.focus_prev_row(e, r, 'foc'))
-        
-        self.qty_entries[row_id] = {
-            'qty_entry': qty_entry,
-            'qty_var': qty_var,
-            'foc_entry': foc_entry,
-            'foc_var': foc_var,
-            'data': item_data
-        }
 
-    def update_foc_qty(self, row_id, foc_var, item_data):
-        try:
-            foc_qty = foc_var.get()
-            if foc_qty < 0:
-                foc_qty = 0.0
-                foc_var.set(0.0)
-            item_data['foc_qty'] = foc_qty
-            self.recalculate_item(row_id, item_data)
-        except ValueError:
-            foc_var.set(0.0)
+
 
     def recalculate_item(self, row_id, item_data):
         received_qty = item_data.get('received_qty', 0.0)
         foc_qty = item_data.get('foc_qty', 0.0)
         trade_price = item_data['trade_price']
+        discount_percent = item_data.get('discount_percent', 0.0)
+        gst_rate = item_data.get('gst_rate', 17.0)
+        
+        # Apply discount to trade price
+        discounted_trade = trade_price * (1 - discount_percent / 100)
+        
+        # Calculate total value (only paid quantity, not FOC)
         total_paid_qty = received_qty
-        total_value = total_paid_qty * trade_price
+        total_value = total_paid_qty * discounted_trade
         total_qty = received_qty + foc_qty
+        
+        # Cost price = total value / total quantity (including FOC)
         cost_price = total_value / total_qty if total_qty > 0 else 0.0
 
-        if item_data['tax_type'] == 'inclusive':
-            retail_price = trade_price
-        else:
-            retail_price = trade_price * (1 + item_data['gst_rate'] / 100)
+        # Calculate retail price based on selected GST method
+        gst_method = self.gst_method_var.get()
+        
+        if gst_method == "trade_price":
+            # Method 1: Applicable on Trade Price (GST% × Trade Price)
+            # Retail = Discounted Trade + (GST% × Discounted Trade)
+            retail_price = discounted_trade * (1 + gst_rate / 100)
+        else:  # retail_inclusive
+            # Method 2: Included in Retail Price
+            # This means: retail_price already contains GST
+            # GST Amount = Retail × GST% / (100 + GST%)
+            # For calculation purposes, we keep retail = discounted trade
+            # But store that GST is included
+            retail_price = discounted_trade
+            item_data['tax_type'] = 'inclusive'
+
 
         self.tree.item(row_id, values=(
             item_data['product_name'],
@@ -277,115 +281,83 @@ class ReceiveGoodsWindow:
             f"{received_qty:.2f}",
             f"{foc_qty:.2f}",
             f"Rs. {trade_price:.2f}",
+            f"{discount_percent:.1f}%",
+            f"{gst_rate:.1f}%",
             f"Rs. {retail_price:.2f}",
-            f"{item_data['gst_rate']:.1f}%",
             item_data['purchase_uom'],
             f"Rs. {cost_price:.2f}"
         ))
         item_data['cost_price'] = cost_price
         item_data['retail_price'] = retail_price
+        item_data['discounted_trade'] = discounted_trade
 
-    def handle_barcode_input(self, barcode, row_id, item_data, qty_var):
-        # Search existing product
-        prod = fetch_one("""
-            SELECT p.id, p.name, p.cost_price, p.gst_rate, p.tax_type, u.symbol
-            FROM products p
-            JOIN uoms u ON p.purchase_uom_id = u.id
-            WHERE p.barcode = ?
-        """, (barcode,))
 
-        if prod:
-            # Existing product
-            item_data.update({
-                'product_name': prod[1],
-                'trade_price': float(prod[2]) if prod[2] else 0.0,
-                'purchase_uom': prod[5] or 'pcs',
-                'product_id': prod[0],
-                'gst_rate': float(prod[3]) if prod[3] else 17.0,
-                'tax_type': prod[4] or 'exclusive',
-                'received_qty': 1.0
-            })
-            qty_var.set("1.00")
-            self.recalculate_item(row_id, item_data)
-            vals = list(self.tree.item(row_id, 'values'))
-            vals[0] = prod[1]
-            vals[1] = "0.00"
-            self.tree.item(row_id, values=vals)
-        else:
-            # Create new product
-            name = simpledialog.askstring("New Product", "Product Name:")
-            if not name:
-                qty_var.set("0.00")
-                return
-            trade_price = simpledialog.askfloat("New Product", "Trade Price:", initialvalue=0.0)
-            if trade_price is None:
-                qty_var.set("0.00")
-                return
-
-            uom_id = fetch_one("SELECT id FROM uoms WHERE symbol = 'pcs'")[0]
-            product_id = execute_query("""
-                INSERT INTO products 
-                (name, barcode, cost_price, selling_price, stock, tax_type, gst_rate, base_uom_id, purchase_uom_id)
-                VALUES (?, ?, ?, ?, 0, 'exclusive', 17.0, ?, ?)
-            """, (name, barcode, trade_price, trade_price, uom_id, uom_id))
-
-            new_prod = fetch_one("""
-                SELECT p.id, p.name, p.cost_price, p.gst_rate, p.tax_type, u.symbol
-                FROM products p
-                JOIN uoms u ON p.purchase_uom_id = u.id
-                WHERE p.id = ?
-            """, (product_id,))
-
-            item_data.update({
-                'product_name': new_prod[1],
-                'trade_price': float(new_prod[2]),
-                'purchase_uom': new_prod[5],
-                'product_id': new_prod[0],
-                'gst_rate': float(new_prod[3]),
-                'tax_type': new_prod[4],
-                'received_qty': 1.0
-            })
-            qty_var.set("1.00")
-            self.recalculate_item(row_id, item_data)
-            vals = list(self.tree.item(row_id, 'values'))
-            vals[0] = new_prod[1]
-            vals[1] = "0.00"
-            self.tree.item(row_id, values=vals)
 
     def show_edit_menu(self, event):
         row_id = self.tree.identify_row(event.y)
         col = self.tree.identify_column(event.x)
-        if not row_id or col not in ("#5", "#6", "#7"):
+        if not row_id or col not in ("#2", "#3", "#4", "#5", "#6", "#7", "#8"):
             return
         item_idx = self.tree.index(row_id)
         if item_idx >= len(self.po_items):
             return
         item_data = self.po_items[item_idx]
 
-        if col == "#5":  # Trade Price
-            new_val = simpledialog.askfloat("Edit Trade Price", "Trade Price:", initialvalue=item_data['trade_price'])
-            if new_val is not None:
+        if col == "#2":  # PO Qty
+            new_po_qty = simpledialog.askfloat("Edit PO Qty", "Purchase Order Quantity:", initialvalue=item_data.get('po_qty', 0.0))
+            if new_po_qty is not None:
+                if new_po_qty < 0:
+                    new_po_qty = 0.0
+                item_data['po_qty'] = float(new_po_qty)
+                self.recalculate_item(row_id, item_data)
+        elif col == "#3":  # Received Qty
+            new_qty = simpledialog.askfloat("Edit Received Qty", "Received Quantity:", initialvalue=item_data.get('received_qty', 0.0))
+            if new_qty is not None:
+                if new_qty < 0:
+                    new_qty = 0.0
+                item_data['received_qty'] = float(new_qty)
+                self.recalculate_item(row_id, item_data)
+        elif col == "#4":  # FOC Qty
+            new_foc = simpledialog.askfloat("Edit FOC Qty", "FOC Quantity:", initialvalue=item_data.get('foc_qty', 0.0))
+            if new_foc is not None:
+                if new_foc < 0:
+                    new_foc = 0.0
+                item_data['foc_qty'] = float(new_foc)
+                self.recalculate_item(row_id, item_data)
+        elif col == "#5":  # Trade Price
+            new_val = simpledialog.askfloat("Edit Trade Price", "Trade Price (Rs):", initialvalue=item_data['trade_price'])
+            if new_val is not None and new_val >= 0:
                 item_data['trade_price'] = new_val
                 self.recalculate_item(row_id, item_data)
-        elif col == "#6":  # Retail Price
-            new_val = simpledialog.askfloat("Edit Retail Price", "Retail Price:", initialvalue=item_data.get('retail_price', 0))
-            if new_val is not None:
-                trade = item_data['trade_price']
-                if trade == 0:
-                    messagebox.showwarning("Warning", "Set trade price first.")
-                    return
-                if new_val >= trade:
-                    item_data['tax_type'] = 'exclusive'
-                    item_data['gst_rate'] = ((new_val / trade) - 1) * 100
-                else:
-                    item_data['tax_type'] = 'inclusive'
-                    item_data['gst_rate'] = 17.0
-                item_data['retail_price'] = new_val
+        elif col == "#6":  # Discount%
+            new_discount = simpledialog.askfloat("Edit Discount", "Discount (%):", initialvalue=item_data.get('discount_percent', 0.0))
+            if new_discount is not None and 0 <= new_discount <= 100:
+                item_data['discount_percent'] = new_discount
                 self.recalculate_item(row_id, item_data)
         elif col == "#7":  # GST%
             new_gst = simpledialog.askfloat("Edit GST%", "GST Rate (%):", initialvalue=item_data['gst_rate'])
             if new_gst is not None and new_gst >= 0:
                 item_data['gst_rate'] = new_gst
+                self.recalculate_item(row_id, item_data)
+        elif col == "#8":  # Retail Price
+            new_val = simpledialog.askfloat("Edit Retail Price", "Retail Price (Rs):", initialvalue=item_data.get('retail_price', 0))
+            if new_val is not None and new_val >= 0:
+                trade = item_data['trade_price']
+                discount = item_data.get('discount_percent', 0.0)
+                discounted_trade = trade * (1 - discount / 100)
+                
+                if discounted_trade == 0:
+                    messagebox.showwarning("Warning", "Set trade price first.")
+                    return
+                
+                # Calculate GST based on retail vs discounted trade
+                if new_val >= discounted_trade:
+                    item_data['tax_type'] = 'exclusive'
+                    item_data['gst_rate'] = ((new_val / discounted_trade) - 1) * 100
+                else:
+                    item_data['tax_type'] = 'inclusive'
+                    item_data['gst_rate'] = 17.0
+                item_data['retail_price'] = new_val
                 self.recalculate_item(row_id, item_data)
 
     def select_product(self):
@@ -458,40 +430,15 @@ class ReceiveGoodsWindow:
             'purchase_uom': purchase_uom,
             'product_id': product_id,
             'gst_rate': gst_rate,
-            'tax_type': tax_type
+            'tax_type': tax_type,
+            'discount_percent': 0.0,
+            'received_qty': 0.0,
+            'foc_qty': 0.0
         }
         self.po_items.append(item_data)
         self.add_item_to_tree(item_data)
 
-    def focus_next(self, event, row_id, next_type):
-        if next_type == 'foc' and row_id in self.qty_entries:
-            self.qty_entries[row_id]['foc_entry'].focus()
-        return "break"
 
-    def focus_next_col(self, event, row_id):
-        return "break"
-
-    def focus_next_row(self, event, current_row_id, col_type):
-        children = self.tree.get_children()
-        idx = children.index(current_row_id)
-        if idx + 1 < len(children):
-            next_row = children[idx + 1]
-            if col_type == 'qty' and next_row in self.qty_entries:
-                self.qty_entries[next_row]['qty_entry'].focus()
-            elif col_type == 'foc' and next_row in self.qty_entries:
-                self.qty_entries[next_row]['foc_entry'].focus()
-        return "break"
-
-    def focus_prev_row(self, event, current_row_id, col_type):
-        children = self.tree.get_children()
-        idx = children.index(current_row_id)
-        if idx > 0:
-            prev_row = children[idx - 1]
-            if col_type == 'qty' and prev_row in self.qty_entries:
-                self.qty_entries[prev_row]['qty_entry'].focus()
-            elif col_type == 'foc' and prev_row in self.qty_entries:
-                self.qty_entries[prev_row]['foc_entry'].focus()
-        return "break"
 
     def save_receipt(self):
         if not self.po_items:
@@ -541,6 +488,9 @@ class ReceiveGoodsWindow:
                 foc_qty = item_data.get('foc_qty', 0.0)
                 if received_qty > 0 or foc_qty > 0:
                     base_uom_qty = received_qty + foc_qty
+                    discount_percent = item_data.get('discount_percent', 0.0)
+                    discounted_trade = item_data['trade_price'] * (1 - discount_percent / 100)
+                    
                     execute_query("""
                         INSERT INTO goods_receipt_items 
                         (receipt_id, product_id, quantity_received, foc_quantity, 
@@ -552,15 +502,19 @@ class ReceiveGoodsWindow:
                         received_qty,
                         foc_qty,
                         base_uom_qty,
-                        item_data['trade_price'],
+                        discounted_trade,  # Save discounted trade price
                         item_data['retail_price'],
                         item_data['cost_price']
                     ))
+                    
+                    # Update product with new cost and selling prices
                     execute_query("""
                         UPDATE products 
-                        SET stock = stock + ? 
+                        SET stock = stock + ?,
+                            cost_price = ?,
+                            selling_price = ?
                         WHERE id = ?
-                    """, (base_uom_qty, item_data['product_id']))
+                    """, (base_uom_qty, item_data['cost_price'], item_data['retail_price'], item_data['product_id']))
 
             messagebox.showinfo("Success", f"✅ Goods receipt {receipt_number} saved!")
             if self.is_frame:
